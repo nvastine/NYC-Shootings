@@ -1,0 +1,329 @@
+---
+title: "NYPD-Report"
+author: "Nick Vastine"
+date: "2024-04-25"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+2021 was a record year for deaths from gun related injuries according to the Pew Research Center <https://www.pewresearch.org/short-reads/2023/04/26/what-the-data-says-about-gun-deaths-in-the-u-s/>. The topic of gun violence and gun control is a constant debate among Americans, with concerns about increasing rates of violence and concerns about racial inequality.
+
+This report reviews NYPD Shooting Incidents from 2006 through 2023 to better understand how these incidents have changed over time,  which people groups are most affected by these incidents, and the time dependence of such incidents.
+
+## The Data
+This report is based on 'NYPD Shooting Incident Data (Historic)' sourced from the City of New York, downloadable from this link:
+
+<https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD>
+
+The report includes the following attributes for 28,562 incidents, which are grouped into categories below:
+
+* Police Booking Data
+  + Incident Key, Precinct, Jurisdiction, Statistical Murder Flag
+* Location and Time Data
+  + Occurrence Date, Time, Borough, Location Classification, Location Description, X & Y Coordinates, Latitude & Longitude
+* Perpetrator Description
+  + Age, Sex, Race
+* Victim Description
+  + Age, Sex, Race
+
+Note however analysis is only performed on the following attributes.
+
+* Occurrence Date
+* Time
+* Borough
+* Victim Description
+  + Age, Sex, Race
+
+The following code first imports the related libraries before importing the data from our source. The relevant attributes are isolated as *tidy_data*.
+
+```{r data_import_and_tidy, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+
+data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+
+tidy_data <- data
+
+tidy_data <- tidy_data %>%
+  select(-c(INCIDENT_KEY)) %>%   
+  select(-c(LOC_OF_OCCUR_DESC:PERP_RACE)) %>%
+  select(-c(X_COORD_CD:Lon_Lat)) %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>%
+  mutate(EVENT = 1) %>%
+  mutate(YEAR = year(OCCUR_DATE)) %>%
+  mutate(MONTH = month(OCCUR_DATE)) %>%
+  mutate(WEEKDAY = weekdays(OCCUR_DATE)) %>%
+  mutate(HOUR = hour(OCCUR_TIME))
+
+tidy_data$WEEKDAY <- factor(tidy_data$WEEKDAY,
+    levels = c("Monday", "Tuesday", "Wednesday", "Thursday",
+               "Friday", "Saturday", "Sunday"))
+# Factoring ensures reporting follows our sequential weekday expectations. 
+
+```
+
+We will create two derivative data tables for ease of graphing later:
+
+* *weekday_hour_data*         - This aggregates incidents per-hour, per-weekday.
+* *annual_cumulative_data*    - This aggregates incidents per-year cumulatively.
+
+
+```{r specific_data, message=FALSE, warning=FALSE}
+
+weekday_hour_data <- tidy_data %>%
+  filter(YEAR > 2021) %>%
+  select(c(WEEKDAY,HOUR,EVENT)) %>%
+  mutate(EVENT = "NULL") %>%
+  group_by(WEEKDAY,HOUR) %>%
+  summarize(EVENT = n()) %>%
+  ungroup() %>%
+  mutate(NORMAL = EVENT/sum(EVENT))
+
+annual_cumulative_data <- tidy_data %>%
+  group_by(VIC_SEX,VIC_AGE_GROUP,VIC_RACE,BORO,YEAR) %>%
+  summarise(EVENT=n()) %>%
+  arrange(YEAR,desc(EVENT)) %>%
+  mutate(YEARLY_TOTAL = cumsum(EVENT)) %>%
+  select(YEAR,VIC_SEX,VIC_AGE_GROUP,VIC_RACE,BORO,YEARLY_TOTAL) %>%
+  ungroup()
+
+```
+
+## Analysis
+
+We will first examine how the quantity of shooting incidents has changed over time to evaluate how the rate of incidents is changing. We will then evaluate the composition of shooting victims for in 2023 for racial composition, age, and borough effects. Finally we will analyze the time-dependence of these incidents and introduce a model to predict likelihood of an incident based on time of day.
+
+### Shooting Incidents over Time
+
+The below graph shows New York City shooting incidents grouped by year and colored by race. Generally incidents have decreased since 2006 except for a sudden surge in  2020 into 2021. This surge may result from the Pandemic and social unrest following the murder of George Floyd. After this surge, shooting incidents have declined back to 2015 levels but not to an all-time low. Note this graph also indicates black people are most affected from these events. 
+
+We can alternatively aggregate this data as a running total of shooting victims since 2006. The below graph reinforces that black people are disproportionately affected by shooting incidents as they make up only 21.1% of the New York City population <https://datausa.io/profile/geo/new-york-ny> but compose 70.8% of shooting victims since 2006. The aggregate graph similarly shows the increase in incidents after 2020, though less clearly.
+
+```{r by_year_by_race, fig.show='hold',out.width="50%"}
+
+tidy_data %>%
+  filter(VIC_RACE!="UNKNOWN") %>%
+  ggplot(aes(x = YEAR, y = EVENT, fill=VIC_RACE)) + 
+  geom_bar(position="stack",stat="identity",width = 0.5) + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "NYC -  Shootings by Year by Race",
+       y = "Incidents",
+       x = "Year",
+       fill = "Victim Race")
+
+annual_cumulative_data %>%
+  filter(VIC_RACE!="UNKNOWN") %>%
+  ggplot(aes(x = YEAR, y = YEARLY_TOTAL, fill=VIC_RACE)) + 
+  geom_bar(position="stack",stat="identity",width = 0.5) + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "NYC - Cumulative Shootings by Victim Race since 2006",
+       y = "Cumulative Incidents",
+       x = "Year",
+       fill = "Victim Race")
+
+```
+
+### Victim Demographics
+
+The following graphs seek to better understand victim demographics. These graphs isolate 2023 shooting incidents to represent recent trends. 
+
+The first graph analyzes victims by age groups, demonstrating that most shooting victims are between 25 and 44. Again this graph makes it apparent black people are most often victims of these incidents.
+
+Note however this comparison is flawed  as the 18-24 age range captures 8 years of age while 25-44 captures 20 years of age.  Also note this victim age distribution may reflect general age demographics, so the graph alone does not indicate disproportionate shooting incidents for the age 25-44 group without additional context of NYC general age demographics.
+
+```{r, age_and_race_2023}
+
+tidy_data %>% # Age and Race
+  filter(VIC_AGE_GROUP != "1022", VIC_AGE_GROUP != "UNKNOWN", YEAR > 2022,VIC_RACE!="UNKNOWN") %>%
+  ggplot(aes(x = VIC_AGE_GROUP, y = EVENT, fill=VIC_RACE)) + 
+  geom_bar(position="stack",stat="identity",width = 0.5) + 
+  theme(legend.position = "bottom") +
+  labs(title = "NYC - 2023 Shootings by Age by Race",
+       y = "Incidents",
+       x = "Victim Age Group",
+       fill = "Victim Race")
+
+```
+
+We can perform a similar analysis but summing the data by New York City's five boroughs.The visualization indicates the Bronx has the highest number of shootings spread across a more diverse group. However, like the age group analysis,  this graph alone cannot express if the quantity of shootings or their racial makeup are disproportionate from general demographics. For example, is the higher proportion of Asian victims in Queens due to a larger general Asian presence, or are Asians disproportionately targeted? A more nuanced analysis  requires  corresponding demographic data for each borough's population and ethnic distribution to draw additional insights conclusively.
+
+```{r borough_and_race_2023}
+
+tidy_data %>% # Borough and Race
+  filter(YEAR > 2022, VIC_RACE!="UNKNOWN") %>%
+  ggplot(aes(x = BORO, y = EVENT, fill=VIC_RACE)) + 
+  geom_bar(position="stack",stat="identity",width = 0.5) + 
+  theme(legend.position = "bottom") +
+  labs(title = "NYC - 2023 Shootings by Borough by Race",
+       y = "Incidents",
+       x = "Borough",
+       fill = "Victim Race")
+
+```
+
+### Time of Incident
+
+The final analysis considers the day of the week and time of day of shooting incidents. This analysis could be valuable for predictive policing and resource planning.
+
+Let's first evaluate what day of the week these events occur using data from 2022 and 2023. Limiting our analysis to the latest data should better reflect recent incident trends. 
+
+The below visualization summarizes the number of incidents based on day of the week. The visualization makes it apparent these incidents increase going into the weekend, and tend to decrease during the week. 
+
+```{r day_of_week}
+tidy_data %>% 
+  filter(YEAR > 2021) %>%
+  ggplot(aes(x = WEEKDAY, y = EVENT)) +  
+  geom_bar(position="stack",stat="identity",width = 0.5) + 
+  theme(legend.position = "bottom") +
+  labs(title = "NYC - Shootings by Day of the Week",
+       y = "Incidents",
+       x = "Weekday")  
+```
+
+We can further evaluate when these incidents occur within each weekday to better inform police assignments. The below visualization segments the incidents into hours and weekdays before normalizing the data across the entire distribution. Darker areas on the heatmap represent times with more incidents throughout the week.
+
+The heatmap shows that crime increases into the  night or carries over into the early hours of the morning. Thus, increased crime on Saturday is really representing crime from Friday night into early Saturday combined with early Saturday night into Sunday. Likewise, Monday incidents are much higher as crime flows from Sunday night into early Monday morning.
+
+```{r hourly_heatmap}
+
+# Heatmap basis from http://www.dartistics.com/adobeanalytics/int-heatmap.html
+
+theme_heatmap <- theme_light() +                 # Start with a minimalist theme
+  theme(panel.grid = element_blank(),            # Remove the gridlines
+        panel.border = element_blank(),          # Remove the border around the heatmap
+        plot.title = element_text(face = "bold", # Make the title bold
+                                  size = 11,     # Adjust the title size
+                                  hjust = 0.5),  # Center the title
+        axis.ticks = element_blank(),            # Remove the axis tickmarks
+        axis.title.x = element_blank(),          # Turn off the x-axis title 
+        axis.title.y = element_text(size=10),    # Adjust the size of the y-axis title
+        axis.text.y = element_text(size = 8),    # Adjust the size of the y-axis labels
+        axis.text.x = element_text(size = 10),   # Adjust the size of the x-axis labels
+        legend.position = "bottom")              # Set legend to bottom
+
+
+weekday_hour_data %>%
+  ggplot(aes(x = WEEKDAY, y = HOUR, fill=NORMAL)) +
+    geom_tile(colour="white") +  
+    scale_fill_gradientn(colors = c("#e5f5f9", "#99d8c9", "#2ca25f")) + 
+    scale_y_reverse(breaks=c(23:0), labels=c(23:0),
+                    expand = c(0,0)) +
+    scale_x_discrete(expand = c(0,0), position = "top") +
+    labs(title = "Normalized Distribution of Shooting Incidents by Day of Week",
+         y = "Hour of Day") +
+    theme_heatmap  # Apply the theme defined earlier for styling
+```
+
+We can convert the distribution into time series data and build an accompanying model. The data has been converted into a continous numeric format with 1.0 being 12AM Monday and 7.9583 being 11PM Sunday. This model could be used to inform the need for police resources across a week.
+
+Below plots the converted data along with our model, again highlighting the daily undulation of incidents surging into the night.
+
+```{r weekday_hour_model}
+weekday_hour_model_data <- weekday_hour_data %>%
+  select(c(WEEKDAY,HOUR,NORMAL)) %>%
+  mutate(WEEKDAY_NUMERIC = as.integer(WEEKDAY)) %>%
+  mutate(HOUR_NUMERIC = HOUR/24) %>%
+  mutate(WEEK_HOUR = WEEKDAY_NUMERIC + HOUR_NUMERIC) %>%
+  select(WEEK_HOUR,NORMAL)
+
+model <- lm(NORMAL ~ poly(WEEK_HOUR,27), 
+            data = weekday_hour_model_data)
+
+weekday_hour_model_data_pred <- weekday_hour_model_data %>%
+  mutate(PRED = predict(model))
+
+```
+
+```{r weekday_hour_prediction}
+weekday_hour_model_data_pred %>%
+  ggplot(aes( x=WEEK_HOUR, y = NORMAL)) + 
+  geom_point(aes( x=WEEK_HOUR, y = NORMAL)) + 
+  geom_line(aes( x=WEEK_HOUR, y = PRED)) +
+  theme(legend.position = "bottom") +
+  labs(title = "Shootings Model Comparison",
+       y = "Normalized Incidents",
+       x = "Weekday")
+
+```
+
+## Uncertainty and Bias
+
+In addition to the aforementioned need for demographic and population data, social reporting like police reports can also introduce uncertainty and bias. For example, it is unclear if victim race is self-identified or identified by the police officer. Likewise, is incident time  alleged or based on when the police received the report. Other sources of uncertainty include disparities in reporting when events are not reported, or if there is increased reporting where there is increased police presence.
+
+Biased reporting from different levels of police presence is interesting as it relates to overpolicing concerns. If we consider incident reporting as proportional to police presence, adding more police to an area could show an increase in incidents simply by reporting a higher percentage of existing crime. Higher reporting could leading to more policing and so on. We would need more data on police presence in these areas, to attempt to understand these effects, though it is a larger social issue.
+
+Hopefully improvements in technology helps reduce the effort to file a report or provides other means for self-reporting beyond policing for more reliable data, though of course more data sources can introduce its own uncertainty.
+
+
+## Conclusions
+
+This study intended to review data to understand gun violence trends over time, the victims of gun violence, and how we can better understand when these events occur to aid in predictive policing.
+
+While shooting incidents did significantly increase in 2020, it has decreased dramatically back to 2015 levels. Prior to the 2020 surge, shooting incidents had decreased monotonically from 2006 to 2019. Shooting incidents are not yet at an all time minimum, though decreases through the past 3 years inspires confidence.
+
+These shooting incidents primarily affect young, black men in the Bronx and Brooklyn. The racial disparity is evident (black people make up 70.8% of victims since 2006 but only 21.1% of the NYC population). However, this report lacks general demographic reporting to understand if boroughs, age groups, or other racial groups are disproportionately affected.
+
+The analysis also found most crime occurs on the weekend, in particular from Friday night to early Monday morning. The data also shows an increase in incidents in the afternoon going into the night. 
+
+The analysis shows that while shooting incidents may be in decline, there is further research required to consider the results in the context of demographics, amount of policing, and addressing the evident racial disparities we are able to assess with confidence. 
+
+
+# Appendix
+Other analysis for your consideration:
+
+## Cumulative Shootings per-day
+* *total_cumulative_data*     - This aggregates data on a per-day basis.
+* *total_race_data*           - This aggregates data on a per-day basis by victim race.
+
+```{r per_day_cumulative, message=FALSE}
+
+total_cumulative_data <- tidy_data %>%
+  mutate(EVENT = "NULL") %>%
+  group_by(OCCUR_DATE) %>%
+  summarise(EVENT=n()) %>%
+  arrange(OCCUR_DATE,desc(EVENT)) %>%
+  mutate(DAILY_TOTAL = cumsum(EVENT)) %>%
+  ungroup() %>%
+  select(OCCUR_DATE,EVENT,DAILY_TOTAL)
+
+total_race_data <- tidy_data %>%
+  group_by(VIC_RACE,OCCUR_DATE) %>%
+  summarise(EVENT=n()) %>%
+  arrange(OCCUR_DATE,desc(EVENT)) %>%
+  mutate(DAILY_TOTAL = cumsum(EVENT)) %>%
+  select(OCCUR_DATE,EVENT,DAILY_TOTAL) %>%
+  ungroup()
+
+```
+
+```{r per_day_cumulative_graph}
+
+total_cumulative_data %>% # Cumulative
+  ggplot(aes(x = OCCUR_DATE, y = DAILY_TOTAL)) +
+  geom_line(aes(color = "DAILY_TOTAL")) +
+  geom_point(aes(color = "DAILY_TOTAL")) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "NYC - Cumulative Shootings",
+       y = "Incidents",
+       x = "Occurrence Date")
+
+total_race_data %>% # Cumulative Race
+  filter(VIC_RACE != "UNKNOWN") %>%
+  ggplot(aes(x = OCCUR_DATE, y = DAILY_TOTAL, group=VIC_RACE, color = VIC_RACE)) + 
+  geom_line() + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "NYC - Cumulative Shootings by Victim Race",
+       y = "Incidents",
+       x = "Occurrence Date")
+
+```
+
